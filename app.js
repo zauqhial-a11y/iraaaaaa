@@ -1,11 +1,8 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
 import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-auth.js";
 import { getDatabase, ref, push, onValue, set } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
+import { getMessaging, getToken, onMessage } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-messaging.js";
 
-/* =========================================================
-   TEMPEL CONFIG FIREBASE KAMU DI SINI.
-   Jangan menghapus tanda kutip.
-   ========================================================= */
 const firebaseConfig = {
   apiKey: "AIzaSyAQ7ZLQijLmy6CdVCO9rfWqX2HdvR4oXA4",
   authDomain: "aisyarah--space.firebaseapp.com",
@@ -17,10 +14,14 @@ const firebaseConfig = {
   measurementId: "G-RQ9E2M5KBF"
 };
 
+// Public VAPID key from Firebase Cloud Messaging > Web Push certificates
+const VAPID_KEY = "BF4BGMgj4icb_SjyXUE_Zey_so0Lmip3ur3kmV1r0uaGG59tqlRE3TCp6iEdLTa5rCwYx2UdWGHdY4CVjRAEcRo";
+
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 let currentUser = localStorage.getItem("aisyarah_user") || "";
 let db = null;
+let messaging = null;
 
 function toast(message){
   const el = $("#toast");
@@ -40,6 +41,61 @@ function setConnection(online, text){
   el.querySelector("span").textContent = text;
 }
 
+async function setupNotifications(app, auth){
+  if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+    console.warn("Browser tidak mendukung Web Push.");
+    return;
+  }
+
+  try {
+    const registration = await navigator.serviceWorker.register("./firebase-messaging-sw.js");
+    messaging = getMessaging(app);
+
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      toast("Notif belum diizinkan di browser.");
+      return;
+    }
+
+    const token = await getToken(messaging, {
+      vapidKey: VAPID_KEY,
+      serviceWorkerRegistration: registration
+    });
+
+    if (!token) {
+      toast("Token notif belum tersedia.");
+      return;
+    }
+
+    // Simpan token perangkat yang sedang dipakai.
+    await set(ref(db, `aisyarah_space/fcmTokens/${auth.currentUser.uid}`), {
+      token,
+      by: currentUser,
+      updatedAt: Date.now()
+    });
+
+    onMessage(messaging, payload => {
+      const title = payload.notification?.title || "Aisyarah Space";
+      const body = payload.notification?.body || "Ada sesuatu yang baru ♡";
+      toast(`${title}: ${body}`);
+
+      // Saat aplikasi sedang terbuka, tampilkan juga notif browser.
+      if (Notification.permission === "granted") {
+        new Notification(title, {
+          body,
+          icon: "./icon-192.png"
+        });
+      }
+    });
+
+    console.log("FCM aktif. Token tersimpan.");
+    toast("Notifikasi berhasil diaktifkan 🔔");
+  } catch (error) {
+    console.error("FCM error:", error);
+    toast("Notif gagal diaktifkan. Cek izin browser.");
+  }
+}
+
 async function initFirebase(){
   if(!firebaseReady()){
     setConnection(false, "Firebase belum dipasang");
@@ -54,6 +110,7 @@ async function initFirebase(){
     await signInAnonymously(auth);
     setConnection(true, "tersambung");
     bindSharedData();
+    await setupNotifications(app, auth);
   }catch(error){
     console.error(error);
     setConnection(false, "koneksi gagal");
@@ -71,7 +128,7 @@ function bindSharedData(){
 function esc(value){
   return String(value ?? "").replace(/[&<>"']/g, c => ({
     "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-  }[c]));
+  }[c] || c));
 }
 
 function dateTime(ms){
